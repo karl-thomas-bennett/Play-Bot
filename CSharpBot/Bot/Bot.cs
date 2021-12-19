@@ -1,18 +1,31 @@
-﻿using System.Drawing;
+﻿using System;
+using System.Drawing;
 using System.Numerics;
 using Bot.Utilities.Processed.BallPrediction;
 using Bot.Utilities.Processed.FieldInfo;
 using Bot.Utilities.Processed.Packet;
 using RLBotDotNet;
+using Bot.scripts;
 
 namespace Bot
 {
     // We want to our bot to derive from Bot, and then implement its abstract methods.
     class Bot : RLBotDotNet.Bot
     {
+        PID steeringController;
+        string team;
         // We want the constructor for our Bot to extend from RLBotDotNet.Bot, but we don't want to add anything to it.
         // You might want to add logging initialisation or other types of setup up here before the bot starts.
-        public Bot(string botName, int botTeam, int botIndex) : base(botName, botTeam, botIndex) { }
+        public Bot(string botName, int botTeam, int botIndex) : base(botName, botTeam, botIndex) {
+            
+            steeringController = new PID(-1, 1, (measurement, prevMeasurement, goal) => {
+                float PI = (float)Math.PI;
+                float rotationsToGoal = (float)Math.Floor((goal - prevMeasurement) / (2 * PI));
+                float rotations = (float)Math.Floor(prevMeasurement / (2 * PI));
+                return new float[] { measurement + 2 * PI * rotations, goal + 2 * PI * rotationsToGoal };
+            });
+            team = botTeam == 0 ? "Blue" : "Orange";
+        }
 
         public override Controller GetOutput(rlbot.flat.GameTickPacket gameTickPacket)
         {
@@ -36,9 +49,31 @@ namespace Bot
                 steer = -1;
             
             // Examples of rendering in the game
-            Renderer.DrawString3D("Ball", Color.Black, ballLocation, 3, 3);
-            Renderer.DrawString3D(steer > 0 ? "Right" : "Left", Color.Aqua, carLocation, 3, 3);
-            Renderer.DrawLine3D(Color.Red, carLocation, ballLocation);
+
+            BallPrediction prediction = GetBallPrediction();
+            PredictionSlice slice = new PredictionSlice();
+            //Console.WriteLine(prediction.Slices.Length);
+            for(int i = 0; i < prediction.Slices.Length - 1; i++)
+            {
+                if(prediction.Slices[i].Physics.Location.Z > 95 && prediction.Slices[i + 1].Physics.Location.Z < 95)
+                {
+                    slice = prediction.Slices[i + 1];
+                    break;
+                }
+                if(i == prediction.Slices.Length - 2)
+                {
+                    slice = prediction.Slices[i];
+                }
+            }
+            if (!packet.GameInfo.IsKickoffPause && prediction.Slices.Length > 1)
+            {
+                Vector3 location = slice.Physics.Location;
+                scripts.Vector goal = new scripts.Vector(location).Flatten();
+                scripts.Vector forward = new scripts.Vector(carRotation.Forward).Flatten();
+                Console.WriteLine(forward.SignedAngleTo(goal));
+                steer = steeringController.P(1).I(1).D(1).SetGoal(goal.AngleOfDirection()).Next(forward.SignedAngleTo(goal));
+                Renderer.DrawLine3D(Color.Red, carLocation, goal.ToVector3());
+            }
             
             // This controller will contain all the inputs that we want the bot to perform.
             return new Controller
